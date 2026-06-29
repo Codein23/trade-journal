@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { saveSettings } from "@/hooks/useSettings";
 import { exportAllJson, exportTradesCsv, importAllJson } from "@/lib/exportImport";
+import { commitImportedTrades, importSummary, parseTradesCsv } from "@/lib/csvImport";
 import { clearAllData, seedDemoData } from "@/data/demoData";
 import type { Settings } from "@/types";
 
@@ -16,23 +17,40 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ open, settings, onClose }: SettingsPanelProps) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const csvRef = useRef<HTMLInputElement>(null);
   const [balance, setBalance] = useState(String(settings.startingBalance));
   const [msg, setMsg] = useState("");
 
   function flash(text: string) {
     setMsg(text);
-    window.setTimeout(() => setMsg(""), 2500);
+    window.setTimeout(() => setMsg(""), 3000);
   }
 
   async function onImportFile(file: File | undefined) {
     if (!file) return;
     try {
       await importAllJson(await file.text());
-      flash("Import successful.");
+      flash("Backup (JSON) restored.");
     } catch (e) {
       flash("Import failed: " + (e as Error).message);
     }
     if (fileRef.current) fileRef.current.value = "";
+  }
+
+  async function onImportCsv(file: File | undefined) {
+    if (!file) return;
+    try {
+      const result = parseTradesCsv(await file.text());
+      if (result.trades.length === 0) {
+        flash("No completed trades found in this CSV.");
+      } else if (confirm(importSummary(result))) {
+        await commitImportedTrades(result.trades);
+        flash(`Imported ${result.trades.length} trades. Analytics updated.`);
+      }
+    } catch (e) {
+      flash("CSV import failed: " + (e as Error).message);
+    }
+    if (csvRef.current) csvRef.current.value = "";
   }
 
   return (
@@ -59,13 +77,23 @@ export function SettingsPanel({ open, settings, onClose }: SettingsPanelProps) {
         </div>
 
         <div>
-          <p className="mb-2 text-xs font-semibold uppercase text-muted">Data</p>
+          <p className="mb-1 text-xs font-semibold uppercase text-muted">Backup (JSON)</p>
+          <p className="mb-2 text-xs text-muted">Full journal: trades, reviews, missed, milestones, settings.</p>
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={() => exportAllJson()}><Download size={14} /> Export JSON</Button>
             <Button size="sm" onClick={() => fileRef.current?.click()}><Upload size={14} /> Import JSON</Button>
-            <Button size="sm" onClick={() => exportTradesCsv()}><FileSpreadsheet size={14} /> Export CSV</Button>
           </div>
-          <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={(e) => onImportFile(e.target.files?.[0])} />
+          <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => onImportFile(e.target.files?.[0])} />
+        </div>
+
+        <div>
+          <p className="mb-1 text-xs font-semibold uppercase text-muted">Trades (CSV)</p>
+          <p className="mb-2 text-xs text-muted">Import a broker order export (auto-reconstructs round-trip trades &amp; P&amp;L) or a journal CSV. Export trades for spreadsheets.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => exportTradesCsv()}><FileSpreadsheet size={14} /> Export CSV</Button>
+            <Button size="sm" variant="primary" onClick={() => csvRef.current?.click()}><Upload size={14} /> Import CSV</Button>
+          </div>
+          <input ref={csvRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => onImportCsv(e.target.files?.[0])} />
         </div>
 
         <div>
