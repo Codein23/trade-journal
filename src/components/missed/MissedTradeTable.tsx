@@ -1,24 +1,35 @@
 import { Pencil, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { SelectCheckbox } from "@/components/ui/SelectCheckbox";
 import { prettyDate } from "@/lib/dates";
+import { cn } from "@/lib/utils";
 import type { MissedTrade } from "@/types";
 
 interface MissedTradeTableProps {
   trades: MissedTrade[];
   onEdit: (t: MissedTrade) => void;
   onDelete: (t: MissedTrade) => void;
+  selectedIds: Set<string>;
+  onToggleRow: (id: string) => void;
+  onToggleAll: (ids: string[], checked: boolean) => void;
 }
 
-export function MissedTradeTable({ trades, onEdit, onDelete }: MissedTradeTableProps) {
+export function MissedTradeTable({ trades, onEdit, onDelete, selectedIds, onToggleRow, onToggleAll }: MissedTradeTableProps) {
   if (trades.length === 0) {
     return <EmptyState title="No missed trades logged" hint="Track quality setups you didn't take to spot patterns." />;
   }
+  const ids = trades.map((t) => t.id);
+  const allSelected = ids.length > 0 && ids.every((id) => selectedIds.has(id));
+  const someSelected = ids.some((id) => selectedIds.has(id));
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full min-w-[900px] text-sm">
+      <table className="w-full min-w-[940px] text-sm">
         <thead className="bg-surface2/60 text-left text-xs text-muted">
           <tr>
+            <th className="w-9 px-3 py-2.5 text-center font-medium">
+              <SelectCheckbox checked={allSelected} indeterminate={!allSelected && someSelected} onChange={(c) => onToggleAll(ids, c)} ariaLabel="Select all missed trades" />
+            </th>
             <th className="px-3 py-2.5 font-medium">Date</th>
             <th className="px-3 py-2.5 font-medium">Pair</th>
             <th className="px-3 py-2.5 font-medium">Session</th>
@@ -33,7 +44,10 @@ export function MissedTradeTable({ trades, onEdit, onDelete }: MissedTradeTableP
         </thead>
         <tbody>
           {trades.map((t) => (
-            <tr key={t.id} className="border-t border-border/60 hover:bg-surface2/40">
+            <tr key={t.id} className={cn("border-t border-border/60 hover:bg-surface2/40", selectedIds.has(t.id) && "bg-brand-green/10")}>
+              <td className="px-3 py-2 text-center">
+                <SelectCheckbox checked={selectedIds.has(t.id)} onChange={() => onToggleRow(t.id)} ariaLabel={`Select missed trade ${t.pair} ${t.date}`} />
+              </td>
               <td className="whitespace-nowrap px-3 py-2 text-white">{prettyDate(t.date)}</td>
               <td className="px-3 py-2 font-medium text-white">{t.pair || "—"}</td>
               <td className="px-3 py-2 text-muted">{t.session || "—"}</td>

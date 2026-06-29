@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Download, FileSpreadsheet, Plus, Upload } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { BulkActionBar } from "@/components/ui/BulkActionBar";
 import { TradeTable } from "@/components/trades/TradeTable";
 import {
   applyFilters,
@@ -8,8 +9,8 @@ import {
   TradeFilters,
   type TradeFilterState,
 } from "@/components/trades/TradeFilters";
+import { deleteTrade } from "@/hooks/useTrades";
 import { exportAllJson, exportTradesCsv, importAllJson } from "@/lib/exportImport";
-import { useRef } from "react";
 import type { Trade } from "@/types";
 
 interface TradesViewProps {
@@ -22,11 +23,38 @@ interface TradesViewProps {
 
 export function TradesView({ trades, onNewTrade, onOpenTrade, onEditTrade, onDeleteTrade }: TradesViewProps) {
   const [filters, setFilters] = useState<TradeFilterState>(EMPTY_FILTERS);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
 
   const pairs = useMemo(() => uniq(trades.map((t) => t.pair)), [trades]);
   const accounts = useMemo(() => uniq(trades.map((t) => t.account)), [trades]);
   const filtered = useMemo(() => applyFilters(trades, filters), [trades, filters]);
+
+  function toggleRow(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll(ids: string[], checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  async function deleteSelected() {
+    if (!confirm(`Delete ${selected.size} selected trade(s)? This cannot be undone.`)) return;
+    await Promise.all([...selected].map((id) => deleteTrade(id)));
+    setSelected(new Set());
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -42,7 +70,17 @@ export function TradesView({ trades, onNewTrade, onOpenTrade, onEditTrade, onDel
 
       <TradeFilters filters={filters} onChange={setFilters} pairs={pairs} accounts={accounts} />
 
-      <TradeTable trades={filtered} onOpen={onOpenTrade} onEdit={onEditTrade} onDelete={onDeleteTrade} />
+      <BulkActionBar count={selected.size} onDelete={deleteSelected} onClear={() => setSelected(new Set())} />
+
+      <TradeTable
+        trades={filtered}
+        onOpen={onOpenTrade}
+        onEdit={onEditTrade}
+        onDelete={onDeleteTrade}
+        selectedIds={selected}
+        onToggleRow={toggleRow}
+        onToggleAll={toggleAll}
+      />
 
       <input
         ref={fileRef}
