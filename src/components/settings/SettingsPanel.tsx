@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { saveSettings } from "@/hooks/useSettings";
 import { exportAllJson, exportTradesCsv, importAllJson } from "@/lib/exportImport";
-import { commitImportedTrades, importSummary, parseTradesCsv } from "@/lib/csvImport";
+import { analyzeImport, commitImportedTrades, importSummary, parseTradesCsv } from "@/lib/csvImport";
 import { clearAllData, seedDemoData } from "@/data/demoData";
 import type { Settings } from "@/types";
 
@@ -43,9 +43,14 @@ export function SettingsPanel({ open, settings, onClose }: SettingsPanelProps) {
       const result = parseTradesCsv(await file.text());
       if (result.trades.length === 0) {
         flash("No completed trades found in this CSV.");
-      } else if (confirm(importSummary(result))) {
-        await commitImportedTrades(result.trades);
-        flash(`Imported ${result.trades.length} trades. Analytics updated.`);
+      } else {
+        const plan = await analyzeImport(result);
+        if (plan.fresh.length === 0) {
+          flash(`All ${result.trades.length} trade(s) already imported. Nothing added.`);
+        } else if (confirm(importSummary(plan))) {
+          await commitImportedTrades(plan.fresh);
+          flash(`Imported ${plan.fresh.length} new${plan.duplicates ? `, skipped ${plan.duplicates} dup` : ""}. Analytics updated.`);
+        }
       }
     } catch (e) {
       flash("CSV import failed: " + (e as Error).message);

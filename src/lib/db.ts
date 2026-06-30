@@ -23,6 +23,10 @@ export class TradeJournalDB extends Dexie {
       milestones: "id, status, type",
       settings: "id",
     });
+    // v2: index importKey for de-duplicating CSV imports.
+    this.version(2).stores({
+      trades: "id, date, pair, account, outcome, rating, profitLoss, year, month, importKey",
+    });
   }
 }
 

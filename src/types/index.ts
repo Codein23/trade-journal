@@ -60,6 +60,8 @@ export interface Trade {
   year: number;
   createdAt: string;
   updatedAt: string;
+  // Stable fingerprint for import de-duplication (set on CSV import).
+  importKey?: string;
 }
 
 export interface DailyReview {

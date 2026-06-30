@@ -111,6 +111,11 @@ interface Fill {
 
 interface Lot { qty: number; price: number } // qty signed
 
+/** Stable fingerprint so re-importing overlapping data doesn't duplicate trades. */
+function makeKey(parts: (string | number)[]): string {
+  return parts.map((p) => String(p).trim()).join("|");
+}
+
 function header(rows: string[][]): { head: string[]; idx: (name: string) => number } {
   const head = rows[0].map((h) => h.trim());
   const idx = (name: string) => head.findIndex((h) => h.toLowerCase() === name.toLowerCase());
@@ -158,7 +163,7 @@ function buildFromOrders(rows: string[][]): CsvImportResult {
     lots: Lot[];
     position: number;
     cycle: null | {
-      entryTime: string; direction: "Long" | "Short"; realized: number;
+      entryTime: string; exitTime: string; direction: "Long" | "Short"; realized: number;
       qtyTraded: number; entryPrice: number; exitPrice: number; contract: string; account: string;
     };
   }>();
@@ -171,7 +176,7 @@ function buildFromOrders(rows: string[][]): CsvImportResult {
 
     if (book.position === 0) {
       book.cycle = {
-        entryTime: f.time, direction: f.side > 0 ? "Long" : "Short", realized: 0,
+        entryTime: f.time, exitTime: f.time, direction: f.side > 0 ? "Long" : "Short", realized: 0,
         qtyTraded: 0, entryPrice: f.price, exitPrice: f.price, contract: f.contract, account: f.account,
       };
     }
@@ -184,6 +189,7 @@ function buildFromOrders(rows: string[][]): CsvImportResult {
       const match = Math.min(remaining, Math.abs(lot.qty));
       book.cycle!.realized += (f.price - lot.price) * lotDir * match * mult;
       book.cycle!.exitPrice = f.price;
+      book.cycle!.exitTime = f.time;
       book.cycle!.qtyTraded += match;
       lot.qty -= lotDir * match;
       book.position -= lotDir * match;
@@ -199,15 +205,17 @@ function buildFromOrders(rows: string[][]): CsvImportResult {
     // Flat again → emit the completed round-trip as a trade.
     if (book.position === 0 && book.cycle) {
       const c = book.cycle;
+      const pnl = Math.round(c.realized * 100) / 100;
       trades.push(newTrade({
         date: toISODate(c.entryTime),
         pair: f.root,
         direction: c.direction,
-        profitLoss: Math.round(c.realized * 100) / 100,
+        profitLoss: pnl,
         account: c.account,
         outcome: c.realized > 0 ? "Win" : c.realized < 0 ? "Loss" : "BE",
         breakEven: c.realized === 0,
         notes: `Imported from CSV · ${c.contract} · qty ${c.qtyTraded} · entry ${c.entryPrice} → exit ${c.exitPrice}`,
+        importKey: makeKey([c.account, f.root, c.contract, c.entryTime, c.exitTime, c.qtyTraded, pnl]),
       }));
       book.cycle = null;
     }
@@ -238,20 +246,25 @@ function buildFromJournalCsv(rows: string[][]): CsvImportResult {
     const outcomeRaw = (row[idx("WIN")] ?? "").trim();
     const outcome = outcomeRaw === "Win" || outcomeRaw === "Loss" || outcomeRaw === "BE"
       ? outcomeRaw : pl > 0 ? "Win" : pl < 0 ? "Loss" : "BE";
+    const isoDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : toISODate(date);
+    const pair = (row[idx("Pairs")] ?? "").trim();
+    const direction = (row[idx("Direction")] ?? "").trim();
+    const account = (row[idx("Account")] ?? "").trim();
     trades.push(newTrade({
-      date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : toISODate(date),
-      pair: (row[idx("Pairs")] ?? "").trim(),
+      date: isoDate,
+      pair,
       session: ((row[idx("Session")] ?? "").trim() || "") as Trade["session"],
       direction: ((row[idx("Direction")] ?? "").trim() || "") as Trade["direction"],
       profitLoss: Number.isNaN(pl) ? 0 : pl,
       model: (row[idx("Model")] ?? "").trim(),
-      account: (row[idx("Account")] ?? "").trim(),
+      account,
       followedRules: (row[idx("Followed rules")] ?? "").trim().toLowerCase() === "true",
       breakEven: (row[idx("BE")] ?? "").trim().toLowerCase() === "true",
       positiveTags: splitTags(row[idx("Positive tags")]),
       negativeTags: splitTags(row[idx("Negative tags")]),
       rating: num(row[idx("Rating")]) || 0,
       outcome,
+      importKey: makeKey([account, pair, isoDate, direction, Number.isNaN(pl) ? 0 : pl]),
     }));
   }
   const totalPnl = Math.round(trades.reduce((s, t) => s + t.profitLoss, 0) * 100) / 100;
@@ -277,18 +290,48 @@ export function parseTradesCsv(text: string): CsvImportResult {
   return isJournal ? buildFromJournalCsv(rows) : buildFromOrders(rows);
 }
 
-/** Human-readable preview shown before committing an import. */
-export function importSummary(r: CsvImportResult): string {
-  if (r.trades.length === 0) {
-    return "No completed trades found in this CSV.";
+export interface ImportPlan {
+  result: CsvImportResult;
+  fresh: Trade[]; // not already in the DB, de-duped within the batch
+  duplicates: number; // skipped because already present or repeated
+}
+
+/**
+ * Compare parsed trades against what's already stored and within the batch,
+ * using the stable importKey, so re-importing overlapping data adds nothing twice.
+ */
+export async function analyzeImport(result: CsvImportResult): Promise<ImportPlan> {
+  const existing = await db.trades.toArray();
+  const known = new Set(existing.map((t) => t.importKey).filter(Boolean) as string[]);
+  const seen = new Set<string>();
+  const fresh: Trade[] = [];
+  let duplicates = 0;
+  for (const t of result.trades) {
+    const k = t.importKey;
+    if (k && (known.has(k) || seen.has(k))) {
+      duplicates++;
+      continue;
+    }
+    if (k) seen.add(k);
+    fresh.push(t);
   }
-  const kind = r.source === "orders"
-    ? "round-trip trades reconstructed from order fills"
-    : "trades";
-  const lines = [
-    `Found ${r.trades.length} ${kind}.`,
-    `Total P&L: ${formatMoney(r.totalPnl)}`,
-  ];
+  return { result, fresh, duplicates };
+}
+
+/** Human-readable preview shown before committing an import. */
+export function importSummary(plan: ImportPlan): string {
+  const { result: r, fresh, duplicates } = plan;
+  if (r.trades.length === 0) return "No completed trades found in this CSV.";
+
+  const freshPnl = Math.round(fresh.reduce((s, t) => s + t.profitLoss, 0) * 100) / 100;
+  const kind = r.source === "orders" ? "round-trip trades reconstructed from order fills" : "trades";
+  const lines = [`Parsed ${r.trades.length} ${kind}.`];
+
+  if (duplicates > 0) {
+    lines.push(`${duplicates} already imported — will be skipped (no duplicates).`);
+  }
+  lines.push(`${fresh.length} new trade(s) to import.`, `New P&L: ${formatMoney(freshPnl)}`);
+
   if (r.source === "orders") {
     const syms = r.symbols
       .map((s) => `${s.root} (×${s.mult}${s.unknown ? " — unknown, assumed 1pt=$1" : ""})`)
@@ -296,11 +339,11 @@ export function importSummary(r: CsvImportResult): string {
     if (syms) lines.push(`Symbols: ${syms}`);
     if (r.openCycles > 0) lines.push(`${r.openCycles} position(s) still open were skipped.`);
   }
-  lines.push("", "Import these trades?");
+  lines.push("", "Import the new trades?");
   return lines.join("\n");
 }
 
-/** Persist imported trades (adds; keeps existing data). */
+/** Persist the de-duped fresh trades (adds; keeps existing data). */
 export async function commitImportedTrades(trades: Trade[]): Promise<void> {
   await db.trades.bulkAdd(trades);
 }

@@ -11,7 +11,7 @@ import {
 } from "@/components/trades/TradeFilters";
 import { deleteTrade } from "@/hooks/useTrades";
 import { exportAllJson, exportTradesCsv, importAllJson } from "@/lib/exportImport";
-import { commitImportedTrades, importSummary, parseTradesCsv } from "@/lib/csvImport";
+import { analyzeImport, commitImportedTrades, importSummary, parseTradesCsv } from "@/lib/csvImport";
 import type { Trade } from "@/types";
 
 interface TradesViewProps {
@@ -34,9 +34,14 @@ export function TradesView({ trades, onNewTrade, onOpenTrade, onEditTrade, onDel
       const result = parseTradesCsv(await file.text());
       if (result.trades.length === 0) {
         alert("No completed trades found in this CSV.");
-      } else if (confirm(importSummary(result))) {
-        await commitImportedTrades(result.trades);
-        alert(`Imported ${result.trades.length} trades. Analytics updated.`);
+      } else {
+        const plan = await analyzeImport(result);
+        if (plan.fresh.length === 0) {
+          alert(`All ${result.trades.length} trade(s) are already imported. Nothing added.`);
+        } else if (confirm(importSummary(plan))) {
+          await commitImportedTrades(plan.fresh);
+          alert(`Imported ${plan.fresh.length} new trade(s)${plan.duplicates ? `, skipped ${plan.duplicates} duplicate(s)` : ""}. Analytics updated.`);
+        }
       }
     } catch (err) {
       alert("CSV import failed: " + (err as Error).message);
